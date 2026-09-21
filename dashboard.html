@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Model Set — Dashboard</title>
+    <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+    <div id="connStatus" class="conn-status connected">● Connected</div>
+
+    <!-- ========== DASHBOARD ========== -->
+    <div id="pageDash" class="page dash-page active">
+
+        <nav class="dash-nav">
+            <div class="nav-inner">
+                <div class="nav-left">
+                    <span class="nav-brand">◈ ModelSet</span>
+                </div>
+                <div class="nav-center">
+                    <span class="nav-clock" id="navClock">00:00:00</span>
+                </div>
+                <div class="nav-right">
+                    <span class="nav-badge" id="navBadge">S</span>
+                    <span class="nav-user" id="navUser">Sunny</span>
+                    <button class="btn btn-sm btn-ghost" onclick="logout()">✕</button>
+                </div>
+            </div>
+        </nav>
+
+        <div class="dash-body">
+
+            <!-- FOLDER CARDS -->
+            <div class="folder-row" id="folderRow"></div>
+
+            <!-- STATS (reflect selected folder) -->
+            <div class="stats-row">
+                <div class="stat-box">
+                    <div class="stat-icon">📝</div>
+                    <div class="stat-info">
+                        <span class="stat-val" id="statGiven">0</span>
+                        <span class="stat-lbl">Given</span>
+                    </div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-icon">⏳</div>
+                    <div class="stat-info">
+                        <span class="stat-val" id="statPending">24</span>
+                        <span class="stat-lbl">Pending</span>
+                    </div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-icon">⏱</div>
+                    <div class="stat-info">
+                        <span class="stat-val" id="statTime">0m</span>
+                        <span class="stat-lbl">Total Time</span>
+                    </div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-icon">🏆</div>
+                    <div class="stat-info">
+                        <span class="stat-val" id="statRank">—</span>
+                        <span class="stat-lbl">Rank</span>
+                    </div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-icon">📊</div>
+                    <div class="stat-info">
+                        <span class="stat-val" id="statGlobal">0%</span>
+                        <span class="stat-lbl">Global Done</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="dash-toolbar">
+                <h2 class="dash-title" id="dashTitle">📋 ABTA — Model Sets</h2>
+                <div class="toolbar-actions">
+                    <button class="btn btn-sm btn-outline" onclick="exportComparison()">📤 Export</button>
+                    <button class="btn btn-sm btn-outline" onclick="showHotQuestions()">🔥 Hot Qs</button>
+                </div>
+            </div>
+
+            <div class="model-list" id="modelList"></div>
+        </div>
+    </div>
+
+    <!-- ========== TEST PAGE ========== -->
+    <div id="pageTest" class="page-overlay" style="display:none;">
+        <div class="test-top">
+            <div class="test-top-inner">
+                <span id="testTitle">Model Set 01</span>
+                <span class="test-timer" id="testTimer">30:00</span>
+                <span id="testProgress">1 / 40</span>
+                <div class="test-top-right">
+                    <span id="reviewBadge" style="display:none;font-size:11px;color:var(--orange);font-weight:600;margin-right:8px;">📝 Review Mode</span>
+                    <button class="btn btn-sm btn-ghost" onclick="exitTest()">✕ Close</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="test-layout">
+            <div class="test-main">
+                <div class="q-box">
+                    <div class="q-num" id="qNum">Q01</div>
+                    <div class="q-opts" id="qOpts">
+                        <label><input type="radio" name="qo" value="A" /> <span>A</span></label>
+                        <label><input type="radio" name="qo" value="B" /> <span>B</span></label>
+                        <label><input type="radio" name="qo" value="C" /> <span>C</span></label>
+                        <label><input type="radio" name="qo" value="D" /> <span>D</span></label>
+                    </div>
+                    <div class="q-nav">
+                        <button class="btn btn-sm btn-outline" id="prevBtn" onclick="prevQ()">◀ Prev</button>
+                        <button class="btn btn-sm btn-outline" id="nextBtn" onclick="nextQ()">Next ▶</button>
+                    </div>
+                </div>
+                <div class="test-foot">
+                    <button class="btn btn-danger" id="submitBtn" onclick="submitTest()" style="padding:12px 48px;font-size:15px;">📤 Submit Set</button>
+                    <button class="btn btn-warning" id="reviewSaveBtn" onclick="saveReview()" style="padding:12px 48px;font-size:15px;display:none;">💾 Save Skipped Answers</button>
+                    <span class="test-hint" id="testHint">Leave blank = Skip · Auto-submit at 0:00</span>
+                </div>
+            </div>
+            <div class="test-side">
+                <div class="side-title">Questions</div>
+                <div class="palette" id="qPalette"></div>
+                <div class="palette-legend">
+                    <span><span class="dot dot-blue"></span> Current</span>
+                    <span><span class="dot dot-green"></span> Done</span>
+                    <span><span class="dot dot-gray"></span> Pending</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========== VIEW PAGE ========== -->
+    <div id="pageView" class="page-overlay" style="display:none;">
+        <div class="view-top">
+            <div class="view-top-inner">
+                <span id="viewTitle">ABTA · Set 09 — Comparison</span>
+                <div class="view-top-actions">
+                    <button class="btn btn-sm btn-outline" onclick="exportView()">📤</button>
+                    <button class="btn btn-sm btn-ghost" onclick="closeView()">← Back</button>
+                </div>
+            </div>
+        </div>
+        <div class="view-body" id="viewBody"></div>
+    </div>
+
+    <!-- ========== HOT QUESTIONS MODAL ========== -->
+    <div id="hotModal" class="modal-overlay" style="display:none;" onclick="if(event.target===this)closeHot()">
+        <div class="modal-box">
+            <div class="modal-head">
+                <h3>🔥 Hot Questions</h3>
+                <button class="btn btn-sm btn-ghost" onclick="closeHot()">✕</button>
+            </div>
+            <div class="modal-body" id="hotBody"></div>
+        </div>
+    </div>
+
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+    <script src="firebase-config.js"></script>
+    <script src="app.js"></script>
+    <script>checkSession();</script>
+</body>
+</html>

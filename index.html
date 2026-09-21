@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Model Set — Login</title>
+    <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+    <div id="pageLogin" class="page login-page active">
+        <div class="login-center">
+
+            <!-- STEP 1 : PASSWORD GATE -->
+            <div class="login-box" id="gateBox">
+                <div class="login-icon">🔒</div>
+                <h1>Restricted Access</h1>
+                <p class="login-sub">Enter the group password to continue</p>
+                <div class="login-divider"></div>
+                <input type="password" id="gateInput" class="gate-input"
+                       placeholder="Password" autocomplete="off"
+                       onkeydown="if(event.key==='Enter')unlockGate()" />
+                <button class="btn btn-blue gate-btn" onclick="unlockGate()">Unlock →</button>
+                <p class="gate-err" id="gateErr"></p>
+            </div>
+
+            <!-- STEP 2 : USER PICKER -->
+            <div class="login-box" id="userBox" style="display:none;">
+                <div class="login-icon">◈</div>
+                <h1>Model Set Hub</h1>
+                <p class="login-sub">ABTA + Question Bunch · 40 Qs Each · Live Sync</p>
+                <div class="login-divider"></div>
+                <div class="login-users" id="userList"></div>
+                <p class="login-footer">Select your name to continue</p>
+            </div>
+
+        </div>
+    </div>
+
+    <!-- Firebase SDKs -->
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+    <script src="firebase-config.js"></script>
+    <script src="app.js"></script>
+    <script>initLogin();</script>
+</body>
+</html>

@@ -1,0 +1,1039 @@
+/* ============================================================
+   CONFIGURATION
+   ============================================================ */
+const CFG = {
+    PASSWORD: '356890',
+    USERS: [
+        'Sunny', 'Srimon', 'Rahul', 'Supam', 'Ayan', 'Soumik',
+        'Subhankar', 'Nasim', 'Sahariar', 'Saptak', 'Alta'
+    ],
+    FOLDERS: {
+        ABTA:           { label: 'ABTA',           icon: '📘' },
+        QUESTION_BUNCH: { label: 'Question Bunch', icon: '📗' }
+    },
+    MODELS_PER_FOLDER: 24,
+    TOTAL_QS: 40,
+    EXAM_SEC: 1800
+};
+
+/* ============================================================
+   STATE
+   ============================================================ */
+let curUser = null;
+let test = null;
+let viewingCtx = null;
+let isReviewMode = false;
+let activeFolder = 'ABTA';
+
+/* ============================================================
+   FIRESTORE
+   ============================================================ */
+const SUB_COL = 'submissions';
+const CMT_COL = 'comments';
+let unsubSubs = null;
+let unsubCmts = null;
+let cachedSubs = [];
+let cachedCmts = {};
+
+/* ============================================================
+   DOM HELPERS
+   ============================================================ */
+const $ = id => document.getElementById(id);
+const show = id => { const el = $(id); if (el) el.style.display = 'block'; };
+const hide = id => { const el = $(id); if (el) el.style.display = 'none'; };
+
+function setConnStatus(online) {
+    const el = $('connStatus');
+    if (!el) return;
+    el.className = 'conn-status ' + (online ? 'connected' : 'disconnected');
+    el.textContent = online ? '● Connected' : '○ Disconnected';
+}
+
+/* ============================================================
+   LOGIN FLOW
+   ============================================================ */
+function initLogin() {
+    const u = sessionStorage.getItem('ms_user');
+    if (u && CFG.USERS.includes(u)) {
+        window.location.replace('dashboard.html');
+        return;
+    }
+    const gate = $('gateBox');
+    const user = $('userBox');
+    if (gate) gate.style.display = 'block';
+    if (user) user.style.display = 'none';
+}
+
+function unlockGate() {
+    const inp = $('gateInput');
+    const err = $('gateErr');
+    if (!inp || !err) return;
+    const val = inp.value.trim();
+    if (val === CFG.PASSWORD) {
+        err.textContent = '';
+        $('gateBox').style.display = 'none';
+        $('userBox').style.display = 'block';
+        renderUserList();
+    } else {
+        err.textContent = '❌ Wrong password. Try again.';
+        inp.value = '';
+        inp.focus();
+    }
+}
+
+function renderUserList() {
+    const list = $('userList');
+    if (!list) return;
+    list.innerHTML = CFG.USERS.map(u => `
+        <button onclick="pickUser('${u}')">
+            ${u}
+            <span class="sub">Click to enter dashboard</span>
+        </button>
+    `).join('');
+}
+
+function pickUser(u) {
+    sessionStorage.setItem('ms_user', u);
+    // Visual feedback
+    document.querySelectorAll('.login-users button').forEach(b => {
+        b.style.pointerEvents = 'none';
+    });
+    setTimeout(() => {
+        try {
+            window.location.href = 'dashboard.html';
+        } catch (e) {
+            window.location.replace('dashboard.html');
+        }
+    }, 60);
+}
+
+function logout() {
+    if (test && test.interval) clearInterval(test.interval);
+    test = null;
+    if (unsubSubs) { try { unsubSubs(); } catch (e) {} unsubSubs = null; }
+    if (unsubCmts) { try { unsubCmts(); } catch (e) {} unsubCmts = null; }
+    curUser = null;
+    sessionStorage.removeItem('ms_user');
+    window.location.href = 'index.html';
+}
+
+function checkSession() {
+    const u = sessionStorage.getItem('ms_user');
+    if (!u || !CFG.USERS.includes(u)) {
+        window.location.href = 'index.html';
+        return false;
+    }
+    curUser = u;
+    const badge = $('navBadge'); if (badge) badge.textContent = u[0];
+    const navUser = $('navUser'); if (navUser) navUser.textContent = u;
+
+    if (!window._clockInt) {
+        window._clockInt = setInterval(() => {
+            const el = document.getElementById('navClock');
+            if (el) el.textContent = new Date().toLocaleTimeString('en-IN', { hour12: false });
+        }, 1000);
+    }
+
+    // ✅ Render UI IMMEDIATELY (works even before Firestore returns)
+    try { renderFolderCards(); } catch (e) { console.error('renderFolderCards error:', e); }
+    try { renderDash(); } catch (e) { console.error('renderDash error:', e); }
+
+    // ✅ Attach live listeners
+    subscribeToData();
+    return true;
+}
+
+/* ============================================================
+   FIRESTORE REAL-TIME
+   ============================================================ */
+function subscribeToData() {
+    if (typeof db === 'undefined' || !db) {
+        console.error('Firestore db is undefined. Check firebase-config.js');
+        setConnStatus(false);
+        return;
+    }
+
+    // 1. Submissions
+    if (unsubSubs) { try { unsubSubs(); } catch (e) {} }
+    try {
+        unsubSubs = db.collection(SUB_COL).onSnapshot(snap => {
+            const subs = [];
+            snap.forEach(doc => subs.push({ id: doc.id, ...doc.data() }));
+            cachedSubs = subs;
+            if (curUser) {
+                try { renderFolderCards(); } catch (e) { console.error(e); }
+                try { renderDash(); } catch (e) { console.error(e); }
+            }
+            setConnStatus(true);
+        }, err => {
+            console.error('subs listener error:', err);
+            setConnStatus(false);
+        });
+    } catch (err) {
+        console.error('Failed to attach subs listener:', err);
+        setConnStatus(false);
+    }
+
+    // 2. Comments
+    if (unsubCmts) { try { unsubCmts(); } catch (e) {} }
+    try {
+        unsubCmts = db.collection(CMT_COL).onSnapshot(snap => {
+            const cmts = {};
+            snap.forEach(doc => {
+                const d = doc.data();
+                const key = d.f + '-' + d.m + '-' + d.q;
+                if (!cmts[key]) cmts[key] = [];
+                cmts[key].push({ ...d, id: doc.id });
+            });
+            Object.keys(cmts).forEach(k => cmts[k].sort((a, b) => a.time - b.time));
+            cachedCmts = cmts;
+            setConnStatus(true);
+        }, err => {
+            console.error('cmts listener error:', err);
+            setConnStatus(false);
+        });
+    } catch (err) {
+        console.error('Failed to attach cmts listener:', err);
+        setConnStatus(false);
+    }
+}
+
+/* ============================================================
+   STORE (Firestore)
+   ============================================================ */
+const Store = {
+    subs() { return cachedSubs; },
+    subsFor(folder) { return cachedSubs.filter(s => s.f === folder); },
+
+    mySub(folder, m) {
+        return cachedSubs.find(s => s.u === curUser && s.f === folder && s.m === m);
+    },
+
+    async saveSub({ u, f, m, ans, sp }) {
+        try {
+            const existing = cachedSubs.find(x => x.u === u && x.f === f && x.m === m);
+            if (existing && existing.id) {
+                await db.collection(SUB_COL).doc(existing.id).update({
+                    ans, ts: Date.now(), sp
+                });
+                existing.ans = ans;
+                existing.sp = sp;
+                existing.ts = Date.now();
+            } else {
+                const ref = await db.collection(SUB_COL).add({
+                    u, f, m, ans, ts: Date.now(), sp
+                });
+                cachedSubs.push({ id: ref.id, u, f, m, ans, sp, ts: Date.now() });
+            }
+        } catch (err) {
+            console.error('saveSub error:', err);
+            alert('Failed to save. Check your connection.');
+        }
+    },
+
+    async updateAns(folder, m, ans) {
+        try {
+            const existing = cachedSubs.find(x => x.u === curUser && x.f === folder && x.m === m);
+            if (existing && existing.id) {
+                await db.collection(SUB_COL).doc(existing.id).update({
+                    ans, ts: Date.now()
+                });
+            }
+        } catch (err) {
+            console.error('updateAns error:', err);
+            alert('Failed to save. Check connection.');
+        }
+    },
+
+    cmts() { return cachedCmts; },
+
+    async addCmt(f, m, q, u, t) {
+        try {
+            const ref = await db.collection(CMT_COL).add({
+                f, m, q, u, t, time: Date.now()
+            });
+            const key = f + '-' + m + '-' + q;
+            if (!cachedCmts[key]) cachedCmts[key] = [];
+            cachedCmts[key].push({ f, m, q, u, t, time: Date.now(), id: ref.id });
+            return cachedCmts;
+        } catch (err) {
+            console.error('addCmt error:', err);
+            alert('Failed to post comment. Check your connection.');
+            return cachedCmts;
+        }
+    }
+};
+
+/* ============================================================
+   FOLDER CARDS
+   ============================================================ */
+function renderFolderCards() {
+    const row = $('folderRow');
+    if (!row) return;
+    const subs = Store.subs();
+    row.innerHTML = Object.entries(CFG.FOLDERS).map(([key, f]) => {
+        const mine = subs.filter(s => s.u === curUser && s.f === key).length;
+        const pct = Math.round((mine / CFG.MODELS_PER_FOLDER) * 100);
+        const active = key === activeFolder ? 'active' : '';
+        return `
+            <div class="folder-card ${active}" onclick="openFolder('${key}')">
+                <div class="folder-icon">${f.icon}</div>
+                <div class="folder-info">
+                    <div class="folder-name">${f.label}</div>
+                    <div class="folder-meta">${mine}/${CFG.MODELS_PER_FOLDER} done · ${pct}%</div>
+                    <div class="folder-bar"><div class="folder-bar-fill" style="width:${pct}%;"></div></div>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+function openFolder(key) {
+    activeFolder = key;
+    renderFolderCards();
+    renderDash();
+}
+
+/* ============================================================
+   DASHBOARD RENDER — SAFE VERSION
+   ============================================================ */
+function renderDash() {
+    if (!curUser) return;
+
+    try {
+        const f = activeFolder;
+        const fLabel = CFG.FOLDERS[f].label;
+        const TOTAL_MODELS = CFG.MODELS_PER_FOLDER;
+
+        const titleEl = $('dashTitle');
+        if (titleEl) titleEl.textContent = CFG.FOLDERS[f].icon + ' ' + fLabel + ' — Model Sets';
+
+        const subs = Store.subsFor(f);
+        const mine = subs.filter(s => s.u === curUser);
+        const given = mine.length;
+        const pending = TOTAL_MODELS - given;
+        const tSec = mine.reduce((s, x) => s + (x.sp || 0), 0);
+        const tStr = tSec >= 3600
+            ? Math.floor(tSec / 3600) + 'h ' + Math.floor((tSec % 3600) / 60) + 'm'
+            : Math.floor(tSec / 60) + 'm';
+
+        const userCounts = {};
+        CFG.USERS.forEach(u => { userCounts[u] = subs.filter(s => s.u === u).length; });
+        const sorted = CFG.USERS.slice().sort((a, b) => userCounts[b] - userCounts[a]);
+        const rank = sorted.indexOf(curUser) + 1;
+
+        const globalDone = new Set(subs.map(s => s.u + '-' + s.m)).size;
+        const totalPossible = CFG.USERS.length * TOTAL_MODELS;
+        const globalPct = totalPossible ? Math.round((globalDone / totalPossible) * 100) : 0;
+
+        const sGiven = $('statGiven'); if (sGiven) sGiven.textContent = given;
+        const sPending = $('statPending'); if (sPending) sPending.textContent = pending;
+        const sTime = $('statTime'); if (sTime) sTime.textContent = tStr;
+        const sRank = $('statRank'); if (sRank) sRank.textContent = rank + '/' + CFG.USERS.length;
+        const sGlobal = $('statGlobal'); if (sGlobal) sGlobal.textContent = globalPct + '%';
+
+        const pendingTest = JSON.parse(sessionStorage.getItem('ms_pending_' + curUser) || 'null');
+
+        const list = $('modelList');
+        if (!list) return;
+        list.innerHTML = '';
+
+        for (let m = 1; m <= TOTAL_MODELS; m++) {
+            const mySub = mine.find(s => s.m === m);
+            const taken = !!mySub;
+            const totalSubbed = subs.filter(s => s.m === m).length;
+            const hasPending = pendingTest && pendingTest.f === f && pendingTest.m === m && !taken;
+
+            // ✅ SAFE skipped count — guards mySub and mySub.ans
+            let skippedCount = 0;
+            if (mySub && mySub.ans && typeof mySub.ans === 'object') {
+                for (let q = 1; q <= CFG.TOTAL_QS; q++) {
+                    if (mySub.ans[q] === null || mySub.ans[q] === undefined) skippedCount++;
+                }
+            }
+
+            const row = document.createElement('div');
+            row.className = 'model-row ' + (hasPending ? 'resume' : taken ? 'done' : 'pending');
+            row.innerHTML = `
+                <div class="mi">
+                    <span class="num">${String(m).padStart(2, '0')}</span>
+                    <span class="status">
+                        ${hasPending
+                            ? '<span class="resume-badge">⏸ Interrupted · Q' + pendingTest.curQ + '</span>'
+                            : taken
+                                ? skippedCount > 0
+                                    ? '<span class="done-badge">✓ Completed</span> <span class="skip-badge">(' + skippedCount + ' skipped)</span>'
+                                    : '<span class="done-badge">✓ Completed</span>'
+                                : '○ Not taken'}
+                        · <span style="color:var(--text-muted);font-size:9px;">${totalSubbed}/${CFG.USERS.length} submitted</span>
+                    </span>
+                </div>
+                <div class="ma">
+                    ${hasPending
+                        ? `<button class="btn btn-warning btn-sm" onclick="resumeTest()">▶ Continue</button>`
+                        : !taken
+                            ? `<button class="btn btn-blue btn-sm" onclick="startTest(${m})">Test</button>`
+                            : ''}
+                    ${taken ? `<button class="btn btn-outline btn-sm" onclick="viewModel(${m})">View</button>` : ''}
+                    ${taken && skippedCount > 0
+                        ? `<button class="btn btn-outline btn-sm" style="border-color:var(--orange);color:var(--orange);" onclick="answerSkipped(${m})">✏️ Ans ${skippedCount}</button>`
+                        : ''}
+                    ${hasPending ? `<button class="btn btn-sm btn-ghost" onclick="discardPending()" style="color:var(--text-muted);">✕</button>` : ''}
+                </div>
+            `;
+            list.appendChild(row);
+        }
+    } catch (err) {
+        console.error('renderDash crashed:', err);
+        const list = $('modelList');
+        if (list) {
+            list.innerHTML = `
+                <div style="padding:20px;background:rgba(239,68,68,0.1);border:1px solid var(--red);border-radius:8px;color:var(--red);text-align:center;">
+                    ⚠️ Dashboard render error: ${err.message}<br>
+                    <small style="color:var(--text-muted);">Check console (F12) for details</small>
+                </div>
+            `;
+        }
+    }
+}
+
+/* ============================================================
+   PENDING TEST
+   ============================================================ */
+function persistTest() {
+    if (!test || !curUser || isReviewMode) return;
+    sessionStorage.setItem('ms_pending_' + curUser, JSON.stringify({
+        f: test.f, m: test.m, ans: test.ans, curQ: test.curQ, timer: test.timer
+    }));
+}
+
+function resumeTest() {
+    const raw = sessionStorage.getItem('ms_pending_' + curUser);
+    if (!raw) return;
+    const p = JSON.parse(raw);
+
+    if (p.f !== activeFolder) {
+        activeFolder = p.f;
+        renderFolderCards();
+    }
+
+    isReviewMode = false;
+    test = { f: p.f, m: p.m, ans: p.ans, curQ: p.curQ, timer: p.timer, interval: null };
+
+    $('testTitle').textContent = CFG.FOLDERS[p.f].label + ' · Set ' + String(p.m).padStart(2, '0');
+    $('submitBtn').style.display = 'inline-flex';
+    $('reviewSaveBtn').style.display = 'none';
+    $('reviewBadge').style.display = 'none';
+    $('testHint').textContent = 'Leave blank = Skip · Auto-submit at 0:00';
+    show('pageTest');
+    renderQ();
+    startTimer();
+    sessionStorage.removeItem('ms_pending_' + curUser);
+    renderDash();
+}
+
+function discardPending() {
+    if (confirm('Discard your in-progress test? All unsaved answers will be lost.')) {
+        sessionStorage.removeItem('ms_pending_' + curUser);
+        renderDash();
+    }
+}
+
+/* ============================================================
+   ANSWER SKIPPED
+   ============================================================ */
+function answerSkipped(m) {
+    const mySub = Store.mySub(activeFolder, m);
+    if (!mySub || !mySub.ans) { alert('You must complete the test first.'); return; }
+
+    let skipped = 0;
+    for (let q = 1; q <= CFG.TOTAL_QS; q++) {
+        if (mySub.ans[q] === null || mySub.ans[q] === undefined) skipped++;
+    }
+    if (skipped === 0) { alert('No skipped questions in this set.'); return; }
+
+    isReviewMode = true;
+    let firstSkipped = 1;
+    for (let q = 1; q <= CFG.TOTAL_QS; q++) {
+        if (mySub.ans[q] === null || mySub.ans[q] === undefined) { firstSkipped = q; break; }
+    }
+
+    test = {
+        f: activeFolder,
+        m,
+        ans: JSON.parse(JSON.stringify(mySub.ans)),
+        curQ: firstSkipped,
+        timer: 0,
+        interval: null
+    };
+
+    $('testTitle').textContent = CFG.FOLDERS[activeFolder].label + ' · Set ' + String(m).padStart(2, '0') + ' — Skipped';
+    $('testTimer').textContent = '--:--';
+    $('testTimer').classList.remove('warning');
+    $('submitBtn').style.display = 'none';
+    $('reviewSaveBtn').style.display = 'inline-flex';
+    $('reviewBadge').style.display = 'inline';
+    $('testHint').textContent = 'Answer the skipped questions and save. No timer.';
+    show('pageTest');
+    renderQ();
+}
+
+async function saveReview() {
+    if (!test || !isReviewMode) return;
+    saveAns();
+    await Store.updateAns(test.f, test.m, { ...test.ans });
+    test = null;
+    isReviewMode = false;
+    document.querySelectorAll('input[name="qo"]').forEach(r => r.checked = false);
+    hide('pageTest');
+    renderDash();
+}
+
+/* ============================================================
+   TEST ENGINE
+   ============================================================ */
+function startTest(m) {
+    if (Store.mySub(activeFolder, m)) {
+        alert('Already completed this set.');
+        return;
+    }
+
+    const raw = sessionStorage.getItem('ms_pending_' + curUser);
+    if (raw) {
+        const p = JSON.parse(raw);
+        if (p.f === activeFolder && p.m === m) {
+            if (confirm('You have an interrupted test for this set. Continue where you left off?')) {
+                resumeTest();
+                return;
+            }
+            sessionStorage.removeItem('ms_pending_' + curUser);
+        }
+    }
+
+    isReviewMode = false;
+    test = { f: activeFolder, m, ans: {}, curQ: 1, timer: CFG.EXAM_SEC, interval: null };
+    for (let i = 1; i <= CFG.TOTAL_QS; i++) test.ans[i] = null;
+
+    persistTest();
+
+    $('testTitle').textContent = CFG.FOLDERS[activeFolder].label + ' · Set ' + String(m).padStart(2, '0');
+    $('submitBtn').style.display = 'inline-flex';
+    $('reviewSaveBtn').style.display = 'none';
+    $('reviewBadge').style.display = 'none';
+    $('testHint').textContent = 'Leave blank = Skip · Auto-submit at 0:00';
+    show('pageTest');
+    renderQ();
+    startTimer();
+}
+
+function exitTest() {
+    if (isReviewMode) {
+        if (confirm('Close review? Unsaved changes will be lost.')) {
+            test = null;
+            isReviewMode = false;
+            document.querySelectorAll('input[name="qo"]').forEach(r => r.checked = false);
+            hide('pageTest');
+        }
+        return;
+    }
+    if (test && test.interval) { clearInterval(test.interval); test.interval = null; }
+    if (confirm('Quit test? Your progress will be lost.')) {
+        sessionStorage.removeItem('ms_pending_' + curUser);
+        test = null;
+        document.querySelectorAll('input[name="qo"]').forEach(r => r.checked = false);
+        hide('pageTest');
+        renderDash();
+    }
+}
+
+function renderQ() {
+    if (!test) return;
+    const q = test.curQ;
+    $('qNum').textContent = 'Q' + String(q).padStart(2, '0');
+    $('testProgress').textContent = q + ' / ' + CFG.TOTAL_QS;
+
+    const radios = document.querySelectorAll('input[name="qo"]');
+    const sel = test.ans[q];
+    radios.forEach(r => {
+        r.checked = (r.value === sel);
+        r.closest('label').classList.toggle('selected', r.value === sel);
+    });
+
+    updatePalette();
+    $('prevBtn').disabled = (q === 1);
+    $('nextBtn').disabled = (q === CFG.TOTAL_QS);
+}
+
+function updatePalette() {
+    if (!test) return;
+    const p = $('qPalette');
+    if (!p) return;
+    p.innerHTML = '';
+    for (let i = 1; i <= CFG.TOTAL_QS; i++) {
+        const a = test.ans[i];
+        let cls = '';
+        if (i === test.curQ) cls = 'current';
+        else if (a !== null && a !== undefined) cls = 'done';
+        const btn = document.createElement('button');
+        btn.className = cls;
+        btn.textContent = i;
+        btn.onclick = () => goQ(i);
+        p.appendChild(btn);
+    }
+}
+
+function saveAns() {
+    if (!test) return;
+    const radios = document.querySelectorAll('input[name="qo"]');
+    let sel = null;
+    radios.forEach(r => { if (r.checked) sel = r.value; });
+    test.ans[test.curQ] = sel;
+    if (!isReviewMode) persistTest();
+}
+
+function goQ(n) { saveAns(); test.curQ = n; renderQ(); if (!isReviewMode) persistTest(); }
+function nextQ() { saveAns(); if (test.curQ < CFG.TOTAL_QS) { test.curQ++; renderQ(); if (!isReviewMode) persistTest(); } }
+function prevQ() { saveAns(); if (test.curQ > 1) { test.curQ--; renderQ(); if (!isReviewMode) persistTest(); } }
+
+function startTimer() {
+    if (test.interval) clearInterval(test.interval);
+    updTimer();
+    test.interval = setInterval(() => {
+        test.timer--;
+        updTimer();
+        if (test.timer % 5 === 0) persistTest();
+        if (test.timer <= 0) {
+            clearInterval(test.interval);
+            test.interval = null;
+            alert('⏰ Time is up! Auto-submitting.');
+            submitTest();
+        }
+    }, 1000);
+}
+
+function updTimer() {
+    if (!test) return;
+    const m = Math.floor(test.timer / 60);
+    const s = test.timer % 60;
+    const el = $('testTimer');
+    if (!el) return;
+    el.textContent = String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+    el.classList.toggle('warning', test.timer <= 120);
+}
+
+async function submitTest() {
+    if (!test) return;
+    if (test.interval) { clearInterval(test.interval); test.interval = null; }
+    saveAns();
+
+    const sp = CFG.EXAM_SEC - test.timer;
+    await Store.saveSub({ u: curUser, f: test.f, m: test.m, ans: { ...test.ans }, sp });
+    sessionStorage.removeItem('ms_pending_' + curUser);
+
+    test = null;
+    document.querySelectorAll('input[name="qo"]').forEach(r => r.checked = false);
+    hide('pageTest');
+    renderDash();
+}
+
+/* ============================================================
+   VIEW ENGINE — SAFE VERSION
+   ============================================================ */
+function viewModel(m) {
+    const f = activeFolder;
+    viewingCtx = { f, m };
+    const subs = Store.subsFor(f);
+    const ms = subs.filter(s => s.m === m);
+
+    const mySub = ms.find(s => s.u === curUser);
+    if (!mySub) {
+        alert('You must take this test first before viewing comparisons!');
+        return;
+    }
+
+    $('viewTitle').textContent = CFG.FOLDERS[f].label + ' · Set ' + String(m).padStart(2, '0') + ' — Comparison';
+
+    const uAns = {}, uSub = {};
+    CFG.USERS.forEach(u => {
+        const s = ms.find(x => x.u === u);
+        if (s) { uAns[u] = s.ans || {}; uSub[u] = true; }
+        else { uAns[u] = {}; uSub[u] = false; }
+    });
+
+    const totalSubmitted = CFG.USERS.filter(u => uSub[u]).length;
+
+    const mismatches = [];
+    for (let q = 1; q <= CFG.TOTAL_QS; q++) {
+        const answers = {};
+        let anyAnswered = false;
+
+        CFG.USERS.forEach(u => {
+            if (uSub[u]) {
+                const a = uAns[u] ? uAns[u][q] : null;
+                answers[u] = a;
+                if (a !== null && a !== undefined) anyAnswered = true;
+            } else {
+                answers[u] = '__NA__';
+            }
+        });
+
+        if (!anyAnswered) continue;
+
+        const validAnswers = CFG.USERS
+            .map(u => answers[u])
+            .filter(a => a !== null && a !== undefined && a !== '__NA__');
+
+        const allSubmitted = CFG.USERS.every(u => uSub[u]);
+        const allSame = validAnswers.length > 0 && validAnswers.every(a => a === validAnswers[0]);
+
+        if (!allSubmitted || !allSame) {
+            mismatches.push({ q, answers });
+        }
+    }
+
+    renderView(f, m, mismatches, uSub, uAns, mySub, totalSubmitted);
+    show('pageView');
+}
+
+function renderView(f, m, mismatches, uSub, uAns, mySub, totalSubmitted) {
+    const el = $('viewBody');
+    if (!el) return;
+
+    // ✅ SAFETY: if mySub is undefined (shouldn't happen, but just in case)
+    if (!mySub || typeof mySub.sp !== 'number') {
+        el.innerHTML = '<p style="padding:40px;text-align:center;color:var(--text-muted);">No submission data found for you in this set.</p>';
+        return;
+    }
+
+    const myTimeStr = Math.floor(mySub.sp / 60) + 'm ' + (mySub.sp % 60) + 's';
+
+    if (mismatches.length === 0) {
+        el.innerHTML = `
+            <div class="view-stats">
+                <div class="vs"><div class="vs-lbl">Mismatches</div><div class="vs-val">0</div></div>
+                <div class="vs"><div class="vs-lbl">Submitted</div><div class="vs-val">${totalSubmitted}/${CFG.USERS.length}</div></div>
+                <div class="vs"><div class="vs-lbl">Questions</div><div class="vs-val">${CFG.TOTAL_QS}</div></div>
+                <div class="vs"><div class="vs-lbl">Your Time</div><div class="vs-val">${myTimeStr}</div></div>
+            </div>
+            <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:40px;text-align:center;">
+                <div style="font-size:40px;margin-bottom:10px;">🎉</div>
+                <h3 style="color:var(--text-primary);">No Mismatches!</h3>
+                <p style="color:var(--text-muted);font-size:12px;margin-top:6px;">
+                    ${totalSubmitted < CFG.USERS.length
+                        ? 'Only ' + totalSubmitted + '/' + CFG.USERS.length + ' friends have submitted so far.<br>Check back later.'
+                        : 'Everyone agrees on every question.'}
+                </p>
+            </div>
+        `;
+        return;
+    }
+
+    let html = `
+        <div class="view-stats">
+            <div class="vs"><div class="vs-lbl">Mismatches</div><div class="vs-val">${mismatches.length}</div></div>
+            <div class="vs"><div class="vs-lbl">Submitted</div><div class="vs-val">${totalSubmitted}/${CFG.USERS.length}</div></div>
+            <div class="vs"><div class="vs-lbl">Questions</div><div class="vs-val">${CFG.TOTAL_QS}</div></div>
+            <div class="vs"><div class="vs-lbl">Your Time</div><div class="vs-val">${myTimeStr}</div></div>
+        </div>
+        <div class="view-note">
+            Showing <strong>${mismatches.length}</strong> questions where answers differ or not all friends have submitted.
+            <span style="color:var(--blue-glow);">Majority vote</span> = most common answer.
+        </div>
+        <table class="vtable">
+            <thead><tr>
+                <th>Q#</th>
+                ${CFG.USERS.map(u => `<th>${u}</th>`).join('')}
+                <th>Majority</th><th>💬</th>
+            </tr></thead>
+            <tbody>
+    `;
+
+    mismatches.forEach(({ q, answers }) => {
+        const counts = { A: 0, B: 0, C: 0, D: 0 };
+        CFG.USERS.forEach(u => {
+            const a = answers[u];
+            if (a && a !== '__NA__' && a !== null && counts.hasOwnProperty(a)) counts[a]++;
+        });
+        const maxCount = Math.max(...Object.values(counts));
+        const topOptions = Object.keys(counts).filter(k => counts[k] === maxCount && maxCount > 0);
+        let vote, vClass;
+        if (topOptions.length === 0) { vote = '—'; vClass = 'vc'; }
+        else if (topOptions.length === 1) { vote = '✓ ' + topOptions[0] + ' (' + maxCount + 'x)'; vClass = 'vc'; }
+        else { vote = '⚖ Tie: ' + topOptions.join('/'); vClass = 'vc tie'; }
+
+        const cmts = Store.cmts();
+        const key = f + '-' + m + '-' + q;
+        const hasCmt = cmts[key] && cmts[key].length > 0;
+
+        html += `
+            <tr class="mrow">
+                <td><strong>${String(q).padStart(2, '0')}</strong></td>
+                ${CFG.USERS.map(u => {
+                    const a = answers[u];
+                    if (a === '__NA__') return '<td class="ac na">—<br><span style="font-size:8px;color:var(--text-muted);">no test</span></td>';
+                    if (a === null || a === undefined) return '<td class="ac sk">⏭<br><span style="font-size:8px;color:var(--text-muted);">skipped</span></td>';
+                    return '<td class="ac">' + a + '</td>';
+                }).join('')}
+                <td class="${vClass}">${vote}</td>
+                <td><button class="cb" onclick="toggleCmt('${f}',${m},${q})">${hasCmt ? '💬 ' + cmts[key].length : 'Comment'}</button></td>
+            </tr>
+            <tr id="cmtR-${f}-${m}-${q}" style="display:none;">
+                <td colspan="${CFG.USERS.length + 3}" style="padding:8px;">
+                    <div class="cp">
+                        <div class="ct">💬 Question ${String(q).padStart(2, '0')} — Discussion</div>
+                        <div id="cmtL-${f}-${m}-${q}"></div>
+                        <div class="ci">
+                            <input type="text" id="cmtI-${f}-${m}-${q}" placeholder="Conclude the right answer..." />
+                            <button class="btn btn-blue btn-sm" onclick="postCmt('${f}',${m},${q})">Post</button>
+                        </div>
+                    </div>
+                </td>
+            </tr>
+        `;
+    });
+
+    html += '</tbody></table>';
+    el.innerHTML = html;
+
+    mismatches.forEach(({ q }) => renderCmt(f, m, q));
+}
+
+/* ============================================================
+   COMMENTS
+   ============================================================ */
+function toggleCmt(f, m, q) {
+    const row = $('cmtR-' + f + '-' + m + '-' + q);
+    if (!row) return;
+    if (!row.style.display || row.style.display === 'none') {
+        row.style.display = 'table-row';
+        renderCmt(f, m, q);
+    } else {
+        row.style.display = 'none';
+    }
+}
+
+function renderCmt(f, m, q) {
+    const c = Store.cmts();
+    const key = f + '-' + m + '-' + q;
+    const list = $('cmtL-' + f + '-' + m + '-' + q);
+    if (!list) return;
+    const items = c[key] || [];
+    if (!items.length) {
+        list.innerHTML = '<p style="font-size:10px;color:var(--text-muted);padding:5px 0;">No comments yet. Start the discussion!</p>';
+        return;
+    }
+    list.innerHTML = items.map(x => `
+        <div class="cm">
+            <span class="cu">${x.u}</span>
+            <span class="ctm">${new Date(x.time).toLocaleString()}</span>
+            <span class="ctx">${x.t}</span>
+        </div>
+    `).join('');
+}
+
+async function postCmt(f, m, q) {
+    const inp = $('cmtI-' + f + '-' + m + '-' + q);
+    if (!inp || !inp.value.trim()) return;
+    await Store.addCmt(f, m, q, curUser, inp.value.trim());
+    inp.value = '';
+    renderCmt(f, m, q);
+    viewModel(m);
+}
+
+function closeView() {
+    hide('pageView');
+    viewingCtx = null;
+}
+
+/* ============================================================
+   EXPORT
+   ============================================================ */
+function exportComparison() {
+    const f = activeFolder;
+    const subs = Store.subsFor(f);
+    if (subs.length === 0) { alert('No data to export yet.'); return; }
+
+    let text = '=== ' + CFG.FOLDERS[f].label + ' — Comparison Export ===\n';
+    text += 'Exported: ' + new Date().toLocaleString() + '\n';
+    text += 'Users: ' + CFG.USERS.join(', ') + '\n\n';
+
+    for (let m = 1; m <= CFG.MODELS_PER_FOLDER; m++) {
+        const ms = subs.filter(s => s.m === m);
+        if (ms.length === 0) continue;
+
+        const uAns = {}, uSub = {};
+        CFG.USERS.forEach(u => {
+            const s = ms.find(x => x.u === u);
+            if (s) { uAns[u] = s.ans || {}; uSub[u] = true; }
+            else { uAns[u] = {}; uSub[u] = false; }
+        });
+
+        let hasMismatch = false;
+        let lines = [];
+        for (let q = 1; q <= CFG.TOTAL_QS; q++) {
+            const ans = {};
+            let any = false;
+            CFG.USERS.forEach(u => {
+                if (uSub[u]) {
+                    const a = uAns[u][q];
+                    ans[u] = a;
+                    if (a !== null && a !== undefined) any = true;
+                } else { ans[u] = '—'; }
+            });
+            if (!any) continue;
+            const valid = CFG.USERS.map(u => ans[u]).filter(a => a && a !== '—');
+            if (valid.length < 2) continue;
+            if (!valid.every(a => a === valid[0])) {
+                hasMismatch = true;
+                lines.push('  Q' + String(q).padStart(2, '0') + ': ' +
+                    CFG.USERS.map(u => u + '=' + (ans[u] || '⏭')).join(' | '));
+            }
+        }
+
+        if (hasMismatch) {
+            text += '--- Set ' + String(m).padStart(2, '0') + ' ---\n';
+            text += lines.join('\n') + '\n\n';
+        }
+    }
+
+    const blob = new Blob([text], { type: 'text/plain' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = f.toLowerCase() + '_comparison_' + Date.now() + '.txt';
+    a.click();
+    URL.revokeObjectURL(a.href);
+}
+
+function exportView() {
+    if (!viewingCtx) return;
+    const { f, m } = viewingCtx;
+    const subs = Store.subsFor(f);
+    const ms = subs.filter(s => s.m === m);
+
+    let text = '=== ' + CFG.FOLDERS[f].label + ' · Set ' + String(m).padStart(2, '0') + ' — Comparison ===\n';
+    text += 'Exported: ' + new Date().toLocaleString() + '\n\n';
+
+    const uAns = {}, uSub = {};
+    CFG.USERS.forEach(u => {
+        const s = ms.find(x => x.u === u);
+        if (s) { uAns[u] = s.ans || {}; uSub[u] = true; }
+        else { uAns[u] = {}; uSub[u] = false; }
+    });
+
+    for (let q = 1; q <= CFG.TOTAL_QS; q++) {
+        const answers = {};
+        let any = false;
+        CFG.USERS.forEach(u => {
+            if (uSub[u]) {
+                const a = uAns[u][q];
+                answers[u] = a;
+                if (a !== null && a !== undefined) any = true;
+            } else { answers[u] = '—'; }
+        });
+        if (!any) continue;
+
+        const valid = CFG.USERS.map(u => answers[u]).filter(a => a && a !== '—');
+        const allSame = valid.length > 0 && valid.every(a => a === valid[0]);
+        const allSub = CFG.USERS.every(u => uSub[u]);
+
+        if (!allSub || !allSame) {
+            text += 'Q' + String(q).padStart(2, '0') + ': ';
+            text += CFG.USERS.map(u => u + '=[' + (answers[u] || '⏭') + ']').join(' | ');
+
+            const counts = { A: 0, B: 0, C: 0, D: 0 };
+            CFG.USERS.forEach(u => {
+                const a = answers[u];
+                if (a && a !== '—' && counts.hasOwnProperty(a)) counts[a]++;
+            });
+            const max = Math.max(...Object.values(counts));
+            const top = Object.keys(counts).filter(k => counts[k] === max && max > 0);
+            text += ' → Majority: ' + (top.length === 1 ? top[0] + ' (' + max + 'x)' : 'Tie: ' + top.join('/'));
+            text += '\n';
+        }
+    }
+
+    const blob = new Blob([text], { type: 'text/plain' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = f.toLowerCase() + '_set' + String(m).padStart(2, '0') + '_comparison.txt';
+    a.click();
+    URL.revokeObjectURL(a.href);
+}
+
+/* ============================================================
+   HOT QUESTIONS (per folder)
+   ============================================================ */
+function showHotQuestions() {
+    const f = activeFolder;
+    const subs = Store.subsFor(f);
+    if (subs.length < 2) {
+        alert('Need at least 2 submissions in ' + CFG.FOLDERS[f].label + '.');
+        return;
+    }
+
+    const qHeat = {};
+    for (let m = 1; m <= CFG.MODELS_PER_FOLDER; m++) {
+        const ms = subs.filter(s => s.m === m);
+        if (ms.length < 2) continue;
+
+        const uAns = {}, uSub = {};
+        CFG.USERS.forEach(u => {
+            const s = ms.find(x => x.u === u);
+            if (s) { uAns[u] = s.ans || {}; uSub[u] = true; }
+            else { uAns[u] = {}; uSub[u] = false; }
+        });
+
+        for (let q = 1; q <= CFG.TOTAL_QS; q++) {
+            const ans = {};
+            let any = false;
+            CFG.USERS.forEach(u => {
+                if (uSub[u]) {
+                    const a = uAns[u][q];
+                    ans[u] = a;
+                    if (a !== null && a !== undefined) any = true;
+                } else { ans[u] = '—'; }
+            });
+            if (!any) continue;
+            const valid = CFG.USERS.map(u => ans[u]).filter(a => a && a !== '—');
+            if (valid.length >= 2 && !valid.every(a => a === valid[0])) {
+                qHeat[q] = (qHeat[q] || 0) + 1;
+            }
+        }
+    }
+
+    const sorted = Object.entries(qHeat).sort((a, b) => b[1] - a[1]);
+    const body = $('hotBody');
+    if (!body) return;
+
+    if (sorted.length === 0) {
+        body.innerHTML = '<p style="color:var(--text-muted);text-align:center;">No hot questions found yet.</p>';
+    } else {
+        body.innerHTML = `
+            <p style="color:var(--text-secondary);margin-bottom:10px;font-size:11px;">
+                🔥 Hot questions in <strong>${CFG.FOLDERS[f].label}</strong> — most disagreements across sets:
+            </p>
+            <table class="vtable">
+                <thead><tr><th>Rank</th><th>Question</th><th>Mismatches</th><th>Heat</th></tr></thead>
+                <tbody>
+                    ${sorted.slice(0, 20).map(([q, count], i) => {
+                        const barW = Math.min(100, Math.round((count / sorted[0][1]) * 100));
+                        const emoji = count >= 5 ? '🔥' : count >= 3 ? '⚡' : '📌';
+                        return `<tr>
+                            <td>#${i + 1}</td>
+                            <td><strong>Q${String(q).padStart(2, '0')}</strong></td>
+                            <td>${count}</td>
+                            <td><div style="display:flex;align-items:center;gap:5px;">
+                                <div style="height:7px;width:${barW}px;background:var(--blue-mid);border-radius:4px;max-width:110px;"></div>
+                                ${emoji}
+                            </div></td>
+                        </tr>`;
+                    }).join('')}
+                </tbody>
+            </table>
+        `;
+    }
+
+    show('hotModal');
+}
+
+function closeHot() { hide('hotModal'); }
