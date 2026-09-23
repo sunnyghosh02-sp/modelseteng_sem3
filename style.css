@@ -1,6 +1,7 @@
 /* ============================================================
    AMOLED BLACK THEME — Pure black + pill UI + auto light mode
-   + Lock / Settings additions + aligned comparison table
+   + Lock / Settings + Aligned comparison table
+   + Submit-status headers + Locked answer styling
    ============================================================ */
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -39,6 +40,7 @@
     --tint-folder-active: rgba(37,99,235,0.08);
     --tint-conn-ok:   rgba(34,197,94,0.15);
     --tint-conn-bad:  rgba(239,68,68,0.15);
+    --tint-sub-header: rgba(37,99,235,0.10);
     --modal-overlay: rgba(0,0,0,0.85);
     --table-row-border: #1a1a1a;
 }
@@ -75,6 +77,7 @@
         --tint-folder-active: rgba(37,99,235,0.07);
         --tint-conn-ok:   rgba(22,163,74,0.15);
         --tint-conn-bad:  rgba(220,38,38,0.15);
+        --tint-sub-header: rgba(37,99,235,0.08);
         --modal-overlay: rgba(15,23,42,0.5);
         --table-row-border: #eef1f6;
     }
@@ -336,6 +339,29 @@ body {
     background: var(--tint-selected);
     color: var(--blue-glow);
 }
+
+/* 🔒 Locked answers (review mode — non-skipped questions) */
+.q-opts label.locked {
+    opacity: 0.55;
+    cursor: not-allowed;
+    pointer-events: none;
+    background: var(--bg-card);
+    border-color: var(--border);
+}
+.q-opts label.locked input[type="radio"] { cursor: not-allowed; }
+
+/* 🔒 Lock note above options */
+.lock-note {
+    font-size: 10px;
+    padding: 7px 11px;
+    margin-bottom: 10px;
+    background: var(--bg-pill);
+    border-radius: 8px;
+    border-left: 3px solid var(--border-lt);
+    font-weight: 600;
+    display: none;
+}
+
 .q-nav { display: flex; justify-content: space-between; margin-top: 16px; gap: 6px; }
 .test-foot { text-align: center; margin-top: 14px; padding: 10px; }
 .test-hint { display: block; font-size: 10px; color: var(--text-muted); margin-top: 6px; }
@@ -421,6 +447,7 @@ body {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    line-height: 1.3;
 }
 .vtable td {
     padding: 9px 5px;
@@ -461,6 +488,18 @@ body {
 }
 .vtable .cb:hover { background: var(--bg-pill-hover); border-color: var(--blue-bright); }
 
+/* 🏷️ Submitted vs non-submitted header tinting */
+.vtable th.th-sub {
+    color: var(--blue-glow);
+    background: var(--tint-sub-header);
+    border-bottom: 2px solid var(--blue-mid);
+}
+.vtable th.th-nosub {
+    color: var(--text-muted);
+    font-weight: 500;
+    opacity: 0.75;
+}
+
 /* Column widths — Q#, Majority, Comment fixed; names share rest */
 .vtable th:first-child,
 .vtable td:first-child {
@@ -476,8 +515,22 @@ body {
 }
 .vtable th:nth-last-child(2),
 .vtable td:nth-last-child(2) {
-    width: 72px;
-    min-width: 72px;
+    width: 78px;
+    min-width: 78px;
+}
+
+/* 📊 Majority header two-line layout */
+.vtable th:nth-last-child(2) {
+    line-height: 1.2;
+}
+.vtable th:nth-last-child(2) span {
+    display: block;
+    font-size: 8px;
+    opacity: 0.7;
+    font-weight: 500;
+    text-transform: none;
+    letter-spacing: 0;
+    margin-top: 1px;
 }
 
 /* Mobile — allow horizontal scroll of the whole table (header moves with cells) */
